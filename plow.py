@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-The Plow.
+The Hammer.
 
-An efficient Chia plot mover.
+An efficient Spacemash bin mover.
 
 Author: Luke Macken <phorex@protonmail.com>
 SPDX-License-Identifier: GPL-3.0-or-later
@@ -18,7 +18,7 @@ from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 
-# Local plot sources
+# Local bin sources
 # For wildcards:
 #   SOURCES = glob.glob('/mnt/*')
 SOURCES = []
@@ -27,7 +27,11 @@ SOURCES = []
 # Examples: ["/mnt/HDD1", "192.168.1.10::hdd1"]
 DESTS = []
 
-# Shuffle plot destinations. Useful when using many plotters to decrease the odds
+# By default file must be at least 4 GiB in size in order to be considered valid
+# Change this value if you have files of a different size
+FILE_SIZE = 4 * 1024**4
+
+# Shuffle bin destinations. Useful when using many smeshers to decrease the odds
 # of them copying to the same drive simultaneously.
 SHUFFLE = True 
 
@@ -37,10 +41,10 @@ BWLIMIT = None
 # Optionally set the I/O scheduling class and priority
 IONICE = None  # "-c 3" for "idle"
 
-# Only send 1 plot at a time, regardless of source/dest. 
+# Only send 1 bin at a time, regardless of source/dest. 
 ONE_AT_A_TIME = False
 
-# Each plot source can have a lock, so we don't send more than one file from
+# Each bin source can have a lock, so we don't send more than one file from
 # that origin at any given time.
 ONE_PER_DRIVE = False
 
@@ -67,14 +71,15 @@ LOCK = asyncio.Lock()  # Global ONE_AT_A_TIME lock
 SRC_LOCKS = defaultdict(asyncio.Lock)  # ONE_PER_DRIVE locks
 
 
-async def plotfinder(paths, plot_queue, loop):
+async def binfinder(paths, bin_queue, loop):
     for path in paths:
-        for plot in Path(path).glob("**/*.plot"):
-            await plot_queue.put(plot)
-    await plotwatcher(paths, plot_queue, loop)
+        for bin in Path(path).glob("**/*.bin"):
+            if os.path.getsize(path) >= FILE_SIZE:
+                await bin_queue.put(bin)
+    await binwatcher(paths, bin_queue, loop)
 
 
-async def plotwatcher(paths, plot_queue, loop):
+async def binwatcher(paths, bin_queue, loop):
     watcher = aionotify.Watcher()
     for path in paths:
         if not Path(path).exists():
@@ -89,33 +94,33 @@ async def plotwatcher(paths, plot_queue, loop):
     await watcher.setup(loop)
     while True:
         event = await watcher.get_event()
-        if event.name.endswith(".plot"):
-            plot_path = Path(event.alias) / event.name
-            await plot_queue.put(plot_path)
+        if event.name.endswith(".bin"):
+            bin_path = Path(event.alias) / event.name
+            await bin_queue.put(bin_path)
 
 
-async def plow(dest, plot_queue, loop):
-    print(f"🧑‍🌾 plowing to {dest}")
+async def hammer(dest, bin_queue, loop):
+    print(f"🔨 hammering to {dest}")
     while True:
         try:
-            plot = await plot_queue.get()
-            cmd = f"{RSYNC_CMD} {RSYNC_FLAGS} {plot} {dest}"
+            bin = await bin_queue.get()
+            cmd = f"{RSYNC_CMD} {RSYNC_FLAGS} {bin} {dest}"
 
             # For local copies, we can check if there is enough space.
             dest_path = Path(dest)
             if dest_path.exists():
                 # Make sure it's actually a mount, and not our root filesystem.
                 if not dest_path.is_mount():
-                    print(f"Farm destination {dest_path} is not mounted. Trying again later.")
-                    await plot_queue.put(plot)
+                    print(f"Smesher destination {dest_path} is not mounted. Trying again later.")
+                    await bin_queue.put(bin)
                     await asyncio.sleep(SLEEP_FOR)
                     continue
 
-                plot_size = plot.stat().st_size
+                bin_size = bin.stat().st_size
                 dest_free = shutil.disk_usage(dest).free
-                if dest_free < plot_size:
-                    print(f"Farm {dest} is full")
-                    await plot_queue.put(plot)
+                if dest_free < bin_size:
+                    print(f"Smesher {dest} is full")
+                    await bin_queue.put(bin)
                     # Just quit the worker entirely for this destination.
                     break
 
@@ -123,12 +128,12 @@ async def plow(dest, plot_queue, loop):
             if ONE_AT_A_TIME:
                 await LOCK.acquire()
 
-            # Only send one plot from each SSD at a time
+            # Only send one bin from each SSD at a time
             if ONE_PER_DRIVE:
-                await SRC_LOCKS[plot.parent].acquire()
+                await SRC_LOCKS[bin.parent].acquire()
 
             try:
-                print(f"🚜 {plot} ➡️  {dest}")
+                print(f"🔨 {bin} ➡️  {dest}")
 
                 # Send a quick test copy to make sure we can write, or fail early.
                 test_cmd = f"rsync /etc/hostname {dest}"
@@ -138,10 +143,10 @@ async def plow(dest, plot_queue, loop):
                 stdout, stderr = await proc.communicate()
                 if proc.returncode != 0:
                     print(f"⁉️  {test_cmd!r} exited with {proc.returncode}")
-                    await plot_queue.put(plot)
+                    await bin_queue.put(bin)
                     break
 
-                # Now rsync the real plot
+                # Now rsync the real bin
                 proc = await asyncio.create_subprocess_shell(
                     cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
@@ -150,7 +155,7 @@ async def plow(dest, plot_queue, loop):
                 finish = datetime.now()
             finally:
                 if ONE_PER_DRIVE:
-                    SRC_LOCKS[plot.parent].release()
+                    SRC_LOCKS[bin.parent].release()
                 if ONE_AT_A_TIME:
                     LOCK.release()
 
@@ -159,19 +164,19 @@ async def plow(dest, plot_queue, loop):
             elif proc.returncode == 10:  # Error in socket I/O
                 # Retry later.
                 print(f"⁉️ {cmd!r} exited with {proc.returncode} (error in socket I/O)")
-                await plot_queue.put(plot)
+                await bin_queue.put(bin)
                 await asyncio.sleep(SLEEP_FOR_LONG)
             elif proc.returncode in (11, 23):  # Error in file I/O
                 # Most likely a full drive.
                 print(f"⁉️ {cmd!r} exited with {proc.returncode} (error in file I/O)")
-                await plot_queue.put(plot)
-                print(f"{dest} plow exiting")
+                await bin_queue.put(bin)
+                print(f"{dest} hammer exiting")
                 break
             else:
                 print(f"⁉️ {cmd!r} exited with {proc.returncode}")
                 await asyncio.sleep(SLEEP_FOR)
-                await plot_queue.put(plot)
-                print(f"{dest} plow exiting")
+                await bin_queue.put(bin)
+                print(f"{dest} hammer exiting")
                 break
             if stdout:
                 output = stdout.decode().strip()
@@ -184,17 +189,17 @@ async def plow(dest, plot_queue, loop):
 
 
 async def main(paths, loop):
-    plot_queue = asyncio.Queue()
+    bin_queue = asyncio.Queue()
     futures = []
 
-    # Add plots to queue
-    futures.append(plotfinder(paths, plot_queue, loop))
+    # Add bins to queue
+    futures.append(binfinder(paths, bin_queue, loop))
 
-    # Fire up a worker for each plow
+    # Fire up a worker for each hammer
     for dest in DESTS:
-        futures.append(plow(dest, plot_queue, loop))
+        futures.append(hammer(dest, bin_queue, loop))
 
-    print('🌱 Plow running...')
+    print('🔨 Hammer running...')
     await asyncio.gather(*futures)
 
 
