@@ -89,7 +89,7 @@ async def binwatcher(paths, bin_queue, loop):
         watcher.watch(
             alias=path,
             path=path,
-            flags=aionotify.Flags.MOVED_TO,
+            flags=aionotify.Flags.CLOSE_WRITE,
         )
     await watcher.setup(loop)
     while True:
