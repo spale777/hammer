@@ -75,7 +75,7 @@ SRC_LOCKS = defaultdict(asyncio.Lock)  # ONE_PER_DRIVE locks
 async def binfinder(paths, bin_queue, loop):
     for path in paths:
         for bin in Path(path).glob("**/*.bin"):
-            if os.path.getsize(path) >= FILE_SIZE:
+            if os.path.getsize(bin) >= FILE_SIZE:
                 await bin_queue.put(bin)
     await binwatcher(paths, bin_queue, loop)
 
