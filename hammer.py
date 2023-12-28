@@ -30,7 +30,7 @@ DESTS = []
 
 # By default file must be at least 4 GiB in size in order to be considered valid
 # Change this value if you have files of a different size
-FILE_SIZE = 4 * 1024**4
+FILE_SIZE = 4 * 1024**3
 
 # Shuffle bin destinations. Useful when using many smeshers to decrease the odds
 # of them copying to the same drive simultaneously.
@@ -77,6 +77,8 @@ async def binfinder(paths, bin_queue, loop):
         for bin in Path(path).glob("**/*.bin"):
             if os.path.getsize(bin) >= FILE_SIZE:
                 await bin_queue.put(bin)
+            else:
+                print('File too small', path);
     await binwatcher(paths, bin_queue, loop)
 
 
@@ -97,7 +99,11 @@ async def binwatcher(paths, bin_queue, loop):
         event = await watcher.get_event()
         if event.name.endswith(".bin"):
             bin_path = Path(event.alias) / event.name
-            await bin_queue.put(bin_path)
+            
+            if os.path.getsize(bin_path) >= FILE_SIZE:
+                await bin_queue.put(bin_path)
+            else:
+                print('File was closed but it was too small', bin_path)
 
 
 async def hammer(dest, bin_queue, loop):
